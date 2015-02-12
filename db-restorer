@@ -1,0 +1,117 @@
+#!/bin/bash
+
+usage() { echo "Usage: $0 [-c <string>] [-d <downloaded_filename>"] 1>&2; exit 1; }
+
+while getopts ":c:d:" o; do
+    case "${o}" in
+        c)
+            c=${OPTARG}
+            [ -f $c ] || usage
+            ;;
+        d)
+            d=${OPTARG}
+            [ -f $d ] || usage
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+if [ ! -z "${c}" ]; then
+    echo "Sourcing config file '$c'..."
+    . $c
+fi
+
+# Move to a working area for downloads
+cd /var/tmp
+localfile=$(basename $DB_SNAPSHOT_URL)
+
+# Handle S3 download
+if [ -z $d ]; then
+    if [ $(echo $DB_SNAPSHOT_URL | cut -c1-5) = "s3://" ]; then
+        # Configure AWS client
+        if [ -z "${AWSCLI}" ]; then
+            AWSCLI=aws
+        fi
+        
+        echo "Fetching database snapshot from S3 ($DB_SNAPSHOT_URL)..."
+        $AWSCLI s3 cp $DB_SNAPSHOT_URL $localfile
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Unable to retrieve DB snapshot."
+            exit 1
+        fi
+    # Handle HTTP/S download
+    elif [ $(echo $DB_SNAPSHOT_URL | cut -c1-4) = "http" ]; then
+        # Configure cURL client
+        if [ -z "${CURLCLI}" ]; then
+            CURLCLI=curl
+        fi
+        
+        echo "Fetching database snapshot via HTTP ($DB_SNAPSHOT_URL)..."
+        curl -oLS $DB_SNAPSHOT_URL
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Unable to retrieve DB snapshot."
+            exit 1
+        fi
+    else
+        echo "ERROR: Unable to handle URL ($DB_SNAPSHOT_URL)."
+        exit 1
+    fi
+fi
+
+# Determine whether we need to decrypt it
+if [ ${localfile:(-4)} = ".gpg" ]; then
+    ptr=$[${#localfile} - 4]
+    localfiledecrypted=${localfile:0:$ptr}
+    if [ ! -r $localfiledecrypted -o $localfile -nt $localfiledecrypted ]; then
+        echo "Decrypting backup..."
+        echo $GPG_SNAPSHOT_PASSPHRASE | gpg --batch --yes -q --passphrase-fd 0 -d $localfile >$localfiledecrypted
+
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Unable to decrypt DB snapshot."
+            exit 1
+        fi
+    else
+        echo "Skipping decryption"
+    fi
+    localfile=$localfiledecrypted
+fi
+
+# Feed the database snapshot into the database
+if [ ${localfile:(-7)} = ".sql.gz" -o ${localfile:(-4)} = ".sql" ]; then
+    catcmd=cat
+    [ ${localfile:(-7)} = ".sql.gz" ] && catcmd=zcat
+    
+    # Notification hook to tell devs it's started
+    
+    echo "Feeding backup into database..."
+    [ ! -z "$NOTIFY_STARTED" ] && eval $NOTIFY_STARTED
+    $catcmd $localfile | mysql $DB_NAME
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Unable to feed snapshot into database."
+        [ ! -z "$NOTIFY_FAILED" ] && eval $NOTIFY_FAILED
+        exit 1
+    fi
+    echo "Successfully restored database snapshot."
+    [ ! -z "$NOTIFY_FINISHED" ] && eval $NOTIFY_FINISHED
+    fi
+    exit 0
+else
+    # Determine whether we need to uncompress it
+    if [ ${localfile:(-3)} = ".gz" ]; then
+        echo "Uncompressing backup..."
+        gzip -d $localfile
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Unable to decompress backup."
+            exit 1
+        fi
+        localfile=${localfile:(${#localfile} - 3)}
+    fi
+fi
+
+#...
+
+echo "Unrecognised snapshot filename/extension ($localfile)."
+exit 1
+

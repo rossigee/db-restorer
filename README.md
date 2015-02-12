@@ -1,5 +1,5 @@
-WordPress Builder
-=================
+Staging Database Restorer
+=========================
 
 A simple script I use to help me download and deploy database backups to my various working environments.
 

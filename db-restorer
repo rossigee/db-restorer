@@ -24,7 +24,7 @@ if [ ! -z "${c}" ]; then
 fi
 
 # Move to a working area for downloads
-cd /var/tmp
+$tmpdir = `mktemp -d` && cd $tmpdir
 localfile=$(basename $DB_SNAPSHOT_URL)
 
 # Handle S3 download
@@ -64,16 +64,12 @@ fi
 if [ ${localfile:(-4)} = ".gpg" ]; then
     ptr=$[${#localfile} - 4]
     localfiledecrypted=${localfile:0:$ptr}
-    if [ ! -r $localfiledecrypted -o $localfile -nt $localfiledecrypted ]; then
-        echo "Decrypting backup..."
-        echo $GPG_SNAPSHOT_PASSPHRASE | gpg --batch --yes -q --passphrase-fd 0 -d $localfile >$localfiledecrypted
 
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Unable to decrypt DB snapshot."
-            exit 1
-        fi
-    else
-        echo "Skipping decryption"
+    echo "Decrypting backup..."
+    echo $GPG_SNAPSHOT_PASSPHRASE | gpg --batch --yes -q --passphrase-fd 0 -d $localfile >$localfiledecrypted
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Unable to decrypt DB snapshot."
+        exit 1
     fi
     localfile=$localfiledecrypted
 fi
@@ -84,34 +80,22 @@ if [ ${localfile:(-7)} = ".sql.gz" -o ${localfile:(-4)} = ".sql" ]; then
     [ ${localfile:(-7)} = ".sql.gz" ] && catcmd=zcat
     
     # Notification hook to tell devs it's started
-    
     echo "Feeding backup into database..."
     [ ! -z "$NOTIFY_STARTED" ] && eval $NOTIFY_STARTED
+
+    # Feed it on it
     $catcmd $localfile | mysql $DB_NAME
     if [ $? -ne 0 ]; then
         echo "ERROR: Unable to feed snapshot into database."
         [ ! -z "$NOTIFY_FAILED" ] && eval $NOTIFY_FAILED
         exit 1
     fi
+    
+    # All good
     echo "Successfully restored database snapshot."
     [ ! -z "$NOTIFY_FINISHED" ] && eval $NOTIFY_FINISHED
-    fi
-    exit 0
-else
-    # Determine whether we need to uncompress it
-    if [ ${localfile:(-3)} = ".gz" ]; then
-        echo "Uncompressing backup..."
-        gzip -d $localfile
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Unable to decompress backup."
-            exit 1
-        fi
-        localfile=${localfile:(${#localfile} - 3)}
-    fi
 fi
 
-#...
-
-echo "Unrecognised snapshot filename/extension ($localfile)."
-exit 1
+echo "Tidy-up."
+rm -rf $tmpdir
 

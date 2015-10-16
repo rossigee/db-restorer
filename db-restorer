@@ -24,7 +24,7 @@ if [ ! -z "${c}" ]; then
 fi
 
 # Move to a working area for downloads
-$tmpdir = `mktemp -d` && cd $tmpdir
+tmpdir=`mktemp -d` && cd $tmpdir
 localfile=$(basename $DB_SNAPSHOT_URL)
 
 # Handle S3 download
